@@ -10,7 +10,7 @@ const char* ssid = "Network";
 const char* password = "password123";
 
 // --- LTA API ---
-const char* apiKey = "YGrvClJOSTqVt4YEuA9gIQ=="; // apiKey setelah sebelumnya registrasi pada website penyedia
+const char* apiKey = "YGrvClJOSTqVt4YEuA9gIQ==";
 const char* busStopCode = "52009";
 
 // --- NTP ---
@@ -35,6 +35,10 @@ int scrollIndex = 0;       // index scrolling
 unsigned long lastScroll = 0;
 const int scrollDelay = 2000; // ganti baris tiap 2 detik
 
+// Variable update data per 1 menit
+unsigned long lastUpdate = 0;
+const unsigned long updateInterval = 60000; // 1 menit (60.000 ms)
+
 void showError(const char* msg) {
   Serial.println(msg);
   display.clearDisplay();
@@ -50,13 +54,7 @@ void setup() {
     Serial.println(F("SSD1306 allocation failed"));
     for (;;);
   }
-//  display.clearDisplay();
-//  display.setTextSize(1);
-//  display.setTextColor(SSD1306_WHITE);
-//  display.setCursor(0, 0);
-//  display.println("Booting...");
-//  display.display();
-
+  
   display.clearDisplay();
   
   String line1 = "Bus Arrival";
@@ -93,14 +91,15 @@ void setup() {
   delay(5000);
 
   WiFi.begin(ssid, password);
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println("Connecting to WiFi");
   int timeout = 0;
-  
+
   while (WiFi.status() != WL_CONNECTED && timeout < 20) {
     delay(500);
-    Serial.print(".");
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("Connecting to WiFi");
+    display.display();
+    delay(3000);
     timeout++;
   }
 
@@ -110,19 +109,42 @@ void setup() {
     display.setCursor(0, 0);
     display.println("WiFi connected!");
     display.display();
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    delay(5000);
   } else {
     showError("WiFi Failed!");
   }
+
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  waitForTimeSync(); // Memastikan waktu NTP sudah sinkron
+  fetchBusData();      // ambil data pertama
+  lastUpdate = millis(); // mulai timer
 }
 
-void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    showError("WiFi Disconnected");
-    delay(2000);
-    return; // skip loop
+void waitForTimeSync() {
+  time_t now;
+  struct tm timeinfo;
+  while (true) {
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    if (timeinfo.tm_year > (2016 - 1900)) { // cek kalau tahun sudah valid (>=2016)
+      Serial.println("Time synchronized!");
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("Time synchronized!");
+      display.display();
+      delay(5000);
+      break;
+    }
+    Serial.println("Waiting for NTP time...");
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("Waiting for NTP time...");
+    display.display();
+    delay(500);
   }
+}
 
+void fetchBusData() {
   HTTPClient http;
   String url = "https://datamall2.mytransport.sg/ltaodataservice/v3/BusArrival?BusStopCode=" + String(busStopCode);
   http.begin(url);
@@ -138,7 +160,6 @@ void loop() {
     if (error) {
       showError("Parse Error!");
       http.end();
-      delay(2000);
       return;
     }
 
@@ -167,7 +188,7 @@ void loop() {
       }
     }
 
-    // Sort nomor bus
+    // sort nomor bus
     for (int i = 0; i < busCount - 1; i++) {
       for (int j = i + 1; j < busCount; j++) {
         if (buses[i].serviceNo.toInt() > buses[j].serviceNo.toInt()) {
@@ -178,7 +199,6 @@ void loop() {
       }
     }
 
-    // Cetak ke Serial
     Serial.println("=== Bus Arrival Info ===");
     for (int i = 0; i < busCount; i++) {
       if (buses[i].minutes <= 0) {
@@ -191,11 +211,21 @@ void loop() {
   } else {
     String err = "API Error: " + String(httpResponseCode);
     showError(err.c_str());
-    http.end();
-    delay(2000);
-    return;
   }
   http.end();
+}
+
+void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    showError("WiFi Disconnected");
+    delay(2000);
+    return; // skip loop
+  }
+
+  if (millis() - lastUpdate >= updateInterval) {
+    lastUpdate = millis(); // reset timer
+    fetchBusData();   // update tiap 1 menit
+  }
 
   // --- Tampilkan ke OLED dengan scroll ---
   if (millis() - lastScroll > scrollDelay && busCount > 0) {
